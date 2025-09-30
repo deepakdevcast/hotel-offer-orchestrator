@@ -1,20 +1,12 @@
 import { Hotel } from '../types/hotel';
-import { supplierAData, supplierBData, mumbaiData, bangaloreData } from '../data/supplierData';
+import { supplierAData, supplierBData } from '../data/supplierData';
 
 export class SupplierService {
   private getDataForCity(city: string): { supplierA: Hotel[]; supplierB: Hotel[] } {
     const normalizedCity = city.toLowerCase();
-    
-    switch (normalizedCity) {
-      case 'delhi':
-        return { supplierA: supplierAData, supplierB: supplierBData };
-      case 'mumbai':
-        return { supplierA: mumbaiData, supplierB: mumbaiData };
-      case 'bangalore':
-        return { supplierA: bangaloreData, supplierB: bangaloreData };
-      default:
-        return { supplierA: [], supplierB: [] };
-    }
+    const supplierA = supplierAData.filter(h => h.city.toLowerCase() === normalizedCity);
+    const supplierB = supplierBData.filter(h => h.city.toLowerCase() === normalizedCity);
+    return { supplierA, supplierB };
   }
 
   async getSupplierAHotels(city: string): Promise<Hotel[]> {

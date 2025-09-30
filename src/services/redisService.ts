@@ -15,9 +15,17 @@ export class RedisService {
     });
   }
 
+  private async ensureConnected(): Promise<void> {
+    if (!this.client.isOpen) {
+      await this.client.connect();
+    }
+  }
+
   async connect(): Promise<void> {
     try {
-      await this.client.connect();
+      if (!this.client.isOpen) {
+        await this.client.connect();
+      }
       console.log('Connected to Redis');
     } catch (error) {
       console.error('Failed to connect to Redis:', error);
@@ -26,15 +34,19 @@ export class RedisService {
   }
 
   async disconnect(): Promise<void> {
-    await this.client.disconnect();
+    if (this.client.isOpen) {
+      await this.client.disconnect();
+    }
   }
 
   async cacheHotels(city: string, hotels: ProcessedHotel[]): Promise<void> {
+    await this.ensureConnected();
     const key = `hotels:${city.toLowerCase()}`;
     await this.client.setEx(key, 3600, JSON.stringify(hotels)); // Cache for 1 hour
   }
 
   async getCachedHotels(city: string): Promise<ProcessedHotel[] | null> {
+    await this.ensureConnected();
     const key = `hotels:${city.toLowerCase()}`;
     const cached = await this.client.get(key);
     return cached ? JSON.parse(cached) : null;
@@ -45,6 +57,7 @@ export class RedisService {
     minPrice?: number, 
     maxPrice?: number
   ): Promise<ProcessedHotel[]> {
+    await this.ensureConnected();
     const cached = await this.getCachedHotels(city);
     if (!cached) {
       return [];
@@ -64,6 +77,7 @@ export class RedisService {
   }
 
   async clearCache(city?: string): Promise<void> {
+    await this.ensureConnected();
     if (city) {
       const key = `hotels:${city.toLowerCase()}`;
       await this.client.del(key);
@@ -76,6 +90,7 @@ export class RedisService {
   }
 
   async getCacheStats(): Promise<{ keys: number; memory: string }> {
+    await this.ensureConnected();
     const keys = await this.client.keys('hotels:*');
     const info = await this.client.info('memory');
     const memoryMatch = info.match(/used_memory_human:([^\r\n]+)/);

@@ -6,9 +6,8 @@ import { Connection, Client } from '@temporalio/client';
 import { config } from './config';
 import { RedisService } from './services/redisService';
 import { SupplierService } from './services/supplierService';
-import { HotelActivities } from './activities/hotelActivities';
 import { hotelWorkflow, HotelWorkflowInput } from './workflows/hotelWorkflow';
-import { supplierAData, supplierBData, mumbaiData, bangaloreData } from './data/supplierData';
+import { supplierAData, supplierBData } from './data/supplierData';
 
 const app = express();
 const redisService = new RedisService();
@@ -27,14 +26,27 @@ async function initializeServices() {
     // Connect to Redis
     await redisService.connect();
     
-    // Connect to Temporal
-    const connection = await Connection.connect({
-      address: config.temporal.address,
-    });
-    temporalClient = new Client({
-      connection,
-      namespace: config.temporal.namespace,
-    });
+    // Connect to Temporal with retries (Temporal may start slowly in Docker)
+    const maxAttempts = 20;
+    const baseDelayMs = 1000;
+    let attempt = 0;
+    let lastError: unknown = null;
+    while (attempt < maxAttempts && !config.temporal.useLocalOrchestration) {
+      try {
+        const connection = await Connection.connect({ address: config.temporal.address });
+        temporalClient = new Client({ connection, namespace: config.temporal.namespace });
+        break;
+      } catch (err) {
+        lastError = err;
+        attempt += 1;
+        const delay = Math.min(baseDelayMs * Math.pow(1.5, attempt), 10000);
+        console.warn(`Temporal not ready (attempt ${attempt}/${maxAttempts}). Retrying in ${Math.round(delay)}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+    if (!temporalClient && !config.temporal.useLocalOrchestration) {
+      throw lastError ?? new Error('Failed to connect to Temporal');
+    }
     
     console.log('All services initialized successfully');
   } catch (error) {
@@ -46,13 +58,9 @@ async function initializeServices() {
 // Mock supplier endpoints
 app.get('/supplierA/hotels', async (req, res) => {
   try {
-    const city = req.query.city as string;
-    if (!city) {
-      return res.status(400).json({ error: 'City parameter is required' });
-    }
-    
-    const hotels = await supplierService.getSupplierAHotels(city);
-    res.json(hotels);
+    const city = (req.query.city as string | undefined)?.toLowerCase();
+    const data = city ? supplierAData.filter(h => h.city.toLowerCase() === city) : supplierAData;
+    res.json(data);
   } catch (error) {
     console.error('Supplier A error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -61,13 +69,9 @@ app.get('/supplierA/hotels', async (req, res) => {
 
 app.get('/supplierB/hotels', async (req, res) => {
   try {
-    const city = req.query.city as string;
-    if (!city) {
-      return res.status(400).json({ error: 'City parameter is required' });
-    }
-    
-    const hotels = await supplierService.getSupplierBHotels(city);
-    res.json(hotels);
+    const city = (req.query.city as string | undefined)?.toLowerCase();
+    const data = city ? supplierBData.filter(h => h.city.toLowerCase() === city) : supplierBData;
+    res.json(data);
   } catch (error) {
     console.error('Supplier B error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -97,21 +101,31 @@ app.get('/api/hotels', async (req, res) => {
       return res.status(400).json({ error: 'minPrice cannot be greater than maxPrice' });
     }
 
-    // Start Temporal workflow
-    const workflowInput: HotelWorkflowInput = {
-      city,
-      minPrice,
-      maxPrice,
-      useCache,
-    };
-
-    const handle = await temporalClient.workflow.start(hotelWorkflow, {
-      args: [workflowInput],
-      taskQueue: 'hotel-orchestrator-queue',
-      workflowId: `hotel-workflow-${city}-${Date.now()}`,
-    });
-
-    const result = await handle.result();
+    // Start orchestration (Temporal or local)
+    let result: { hotels: any[]; fromCache: boolean; supplierStatus: { supplierA: 'healthy' | 'unhealthy'; supplierB: 'healthy' | 'unhealthy' } };
+    if (config.temporal.useLocalOrchestration) {
+      // Local mode: perform the same steps inline using activities logic
+      const { callSupplierA, callSupplierB, deduplicateAndSelectBest, cacheResults, getCachedResults, filterByPrice } = await import('./activities/hotelActivities');
+      const cached = useCache ? await getCachedResults(city) : null;
+      if (cached && cached.length > 0) {
+        const hotels = (minPrice !== undefined || maxPrice !== undefined) ? await filterByPrice(city, minPrice, maxPrice) : cached;
+        result = { hotels, fromCache: true, supplierStatus: { supplierA: 'healthy', supplierB: 'healthy' } };
+      } else {
+        const [a, b] = await Promise.all([callSupplierA(city), callSupplierB(city)]);
+        const deduped = await deduplicateAndSelectBest(a, b);
+        await cacheResults(city, deduped);
+        const finalHotels = (minPrice !== undefined || maxPrice !== undefined) ? await filterByPrice(city, minPrice, maxPrice) : deduped;
+        result = { hotels: finalHotels, fromCache: false, supplierStatus: { supplierA: a.status, supplierB: b.status } };
+      }
+    } else {
+      const workflowInput: HotelWorkflowInput = { city, minPrice, maxPrice, useCache };
+      const handle = await temporalClient.workflow.start(hotelWorkflow, {
+        args: [workflowInput],
+        taskQueue: 'hotel-orchestrator-queue',
+        workflowId: `hotel-workflow-${city}-${Date.now()}`,
+      });
+      result = await handle.result();
+    }
     
     res.json({
       hotels: result.hotels,

@@ -5,7 +5,8 @@ export const config = {
   },
   temporal: {
     address: process.env.TEMPORAL_ADDRESS || 'localhost:7233',
-    namespace: 'hotel-orchestrator',
+    namespace: process.env.TEMPORAL_NAMESPACE || 'default',
+    useLocalOrchestration: process.env.USE_LOCAL_ORCHESTRATION === 'true',
   },
   suppliers: {
     supplierA: {

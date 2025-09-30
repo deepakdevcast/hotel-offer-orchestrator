@@ -1,12 +1,12 @@
 import { Worker } from '@temporalio/worker';
-import { HotelActivities } from './activities/hotelActivities';
+import * as activities from './activities/hotelActivities';
 import { hotelWorkflow } from './workflows/hotelWorkflow';
 import { config } from './config';
 
 async function run() {
   const worker = await Worker.create({
     workflowsPath: require.resolve('./workflows/hotelWorkflow'),
-    activities: new HotelActivities(),
+    activities,
     taskQueue: 'hotel-orchestrator-queue',
   });
 
